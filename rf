@@ -1,0 +1,156 @@
+import random
+import time
+import sys
+import RPi.GPIO as GPIO
+from rpi_rf import RFDevice
+from smartcard.System import readers
+from smartcard.util import toHexString
+from smartcard.Exceptions import NoCardException
+
+TRANSMITTER_PIN = 17
+RECEIVER_PIN = 27
+
+# Callback function for when an RF signal is received
+def on_rf_receive(rfdevice):
+    global received_signals
+    received_signals.append((rfdevice.rx_code, rfdevice.rx_pulselength))
+
+# Main function for the RF Signal Replicator
+def rf_signal_replicator():
+    global received_signals
+    received_signals = []
+
+    # Initialize the RF receiver and set the callback function
+    rf_receiver = RFDevice(RECEIVER_PIN)
+    rf_receiver.enable_rx()
+    rf_receiver.rx_callback = on_rf_receive
+
+    print("Receiving signals for 10 seconds...")
+    display_loading_bar(10, "Loading:")
+
+    # Cleanup the RF receiver
+    rf_receiver.cleanup()
+
+    if not received_signals:
+        print("No signals received.")
+        return
+
+    print("\nReceived signals:")
+    for i, signal in enumerate(received_signals):
+        print(f"{i + 1}: Code: {signal[0]}, Pulse length: {signal[1]}")
+
+    selected_signal = input("Choose a signal to transmit (1-{}), or 'q' to quit: ".format(len(received_signals)))
+
+    if selected_signal.lower() == 'q':
+        print("Exiting RF Signal Replicator.")
+        return
+
+    try:
+        selected_signal = int(selected_signal) - 1
+
+        if 0 <= selected_signal < len(received_signals):
+            # Initialize the RF transmitter
+            rf_transmitter = RFDevice(TRANSMITTER_PIN)
+
+            print(f"Transmitting signal {selected_signal + 1}: Code: {received_signals[selected_signal][0]}, Pulse length: {received_signals[selected_signal][1]}")
+            # Transmit the chosen signal
+            rf_transmitter.tx_code(received_signals[selected_signal][0], received_signals[selected_signal][1])
+
+            # Cleanup the RF transmitter
+            rf_transmitter.cleanup()
+
+        else:
+            print("Invalid signal selection.")
+
+    except ValueError:
+        print("Invalid input.")
+
+def get_uid(connection):
+    get_uid_command = [0xFF, 0xCA, 0x00, 0x00, 0x00]
+    data, sw1, sw2 = connection.transmit(get_uid_command)
+    if sw1 == 0x90 and sw2 == 0x00:
+        return data
+    else:
+        print("Error getting UID. SW1: {}, SW2: {}".format(hex(sw1), hex(sw2)))
+        return None
+
+def connect_to_card(reader):
+    connection = reader.createConnection()
+    while True:
+        try:
+            connection.connect()
+            break
+        except NoCardException:
+            time.sleep(1)
+    return connection
+
+def smartcard_uid_reader_writer():
+    # Get the list of available readers
+    card_readers = readers()
+    if not card_readers:
+        print("No card readers detected.")
+        sys.exit()
+
+    print("Available readers:", card_readers)
+
+    # Use the first reader in the list
+    reader = card_readers[0]
+    print("Using reader:", reader)
+
+    # Connect to the first card
+    print("Place the first card on the reader...")
+    connection = connect_to_card(reader)
+
+    # Read UID
+    # Read UID from the first card
+    uid = get_uid(connection)
+    if uid:
+        print("Read UID:", toHexString(uid))
+        connection.disconnect()
+    else:
+        print("Failed to read UID from the first card.")
+        sys.exit()
+
+    time.sleep(3)
+
+    # Connect to the second card
+    print("Place the second card on the reader...")
+    connection = connect_to_card(reader)
+
+    # Write UID to the second card
+    write_uid_command = [0xFF, 0xD6, 0x00, 0x00, len(uid)] + uid
+    response, sw1, sw2 = connection.transmit(write_uid_command)
+
+    if sw1 == 0x90 and sw2 == 0x00:
+        print("UID written successfully.")
+    else:
+        print("Error writing UID. SW1: {}, SW2: {}".format(hex(sw1), hex(sw2)))
+
+    connection.disconnect()
+
+def display_loading_bar(duration, label):
+    for i in range(duration):
+        print(f"{label} [{'#' * i}{' ' * (duration - i - 1)}] {i + 1}/{duration}", end='\r', flush=True)
+        time.sleep(1)
+    print()
+
+def main():
+    while True:
+        print("Select an option:")
+        print("1. RF Signal Replicator")
+        print("2. Smartcard UID Reader/Writer")
+        print("3. Quit")
+        choice = input("Enter the number of your choice: ")
+
+        if choice == '1':
+            rf_signal_replicator()
+        elif choice == '2':
+            smartcard_uid_reader_writer()
+        elif choice == '3':
+            print("Exiting.")
+            break
+        else:
+            print("Invalid input. Please enter a number from 1 to 3.")
+
+if __name__ == "__main__":
+    main()
